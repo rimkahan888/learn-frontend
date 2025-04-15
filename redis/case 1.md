@@ -41,3 +41,43 @@ module.exports = {
 ```
 
 
+### 2. Caching Middleware
+
+```javascript
+// cache-middleware.js
+const { get, setex } = require('./redis-client');
+
+async function cacheMiddleware(req, res, next) {
+  const cacheKey = `api:${req.originalUrl}`;
+  
+  try {
+    // Check cache first
+    const cachedData = await get(cacheKey);
+    
+    if (cachedData) {
+      console.log('Serving from cache');
+      return res.json(JSON.parse(cachedData));
+    }
+    
+    // Override res.json to cache responses
+    const originalJson = res.json;
+    res.json = (body) => {
+      // Cache successful responses (status 200-299)
+      if (res.statusCode >= 200 && res.statusCode < 300) {
+        // Cache for 5 minutes (300 seconds)
+        setex(cacheKey, 300, JSON.stringify(body))
+          .catch(err => console.error('Cache set error:', err));
+      }
+      originalJson.call(res, body);
+    };
+    
+    next();
+  } catch (err) {
+    console.error('Cache middleware error:', err);
+    next();
+  }
+}
+
+module.exports = cacheMiddleware;
+```
+
