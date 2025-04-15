@@ -40,44 +40,122 @@ module.exports = {
 };
 ```
 
-
-### 2. Caching Middleware
+### 3. Payment Service with Caching
 
 ```javascript
-// cache-middleware.js
+// payment-service.js
+const axios = require('axios');
 const { get, setex } = require('./redis-client');
 
-async function cacheMiddleware(req, res, next) {
-  const cacheKey = `api:${req.originalUrl}`;
-  
-  try {
-    // Check cache first
-    const cachedData = await get(cacheKey);
+class PaymentService {
+  constructor() {
+    this.cacheTTL = 300; // 5 minutes
+  }
+
+  async processPayment(paymentData) {
+    const cacheKey = `payment:${paymentData.transactionId}`;
     
-    if (cachedData) {
-      console.log('Serving from cache');
-      return res.json(JSON.parse(cachedData));
-    }
-    
-    // Override res.json to cache responses
-    const originalJson = res.json;
-    res.json = (body) => {
-      // Cache successful responses (status 200-299)
-      if (res.statusCode >= 200 && res.statusCode < 300) {
-        // Cache for 5 minutes (300 seconds)
-        setex(cacheKey, 300, JSON.stringify(body))
-          .catch(err => console.error('Cache set error:', err));
+    try {
+      // Check for cached result
+      const cachedResult = await get(cacheKey);
+      if (cachedResult) {
+        console.log('Returning cached payment result');
+        return JSON.parse(cachedResult);
       }
-      originalJson.call(res, body);
-    };
+
+      // Process with Stripe
+      const stripeResponse = await axios.post(
+        'https://api.stripe.com/v1/charges',
+        paymentData,
+        {
+          headers: { Authorization: `Bearer ${process.env.STRIPE_KEY}` },
+          timeout: 5000 // 5s timeout
+        }
+      );
+
+      // Cache successful payment
+      await setex(
+        cacheKey,
+        this.cacheTTL,
+        JSON.stringify(stripeResponse.data)
+      );
+
+      return stripeResponse.data;
+    } catch (error) {
+      console.error('Payment processing error:', error);
+      throw error;
+    }
+  }
+  
+  async getPaymentStatus(transactionId) {
+    const cacheKey = `payment_status:${transactionId}`;
     
-    next();
-  } catch (err) {
-    console.error('Cache middleware error:', err);
-    next();
+    try {
+      // Check cache first
+      const cachedStatus = await get(cacheKey);
+      if (cachedStatus) {
+        return JSON.parse(cachedStatus);
+      }
+
+      // Fallback to API
+      const response = await axios.get(
+        `https://api.stripe.com/v1/charges/${transactionId}`,
+        {
+          headers: { Authorization: `Bearer ${process.env.STRIPE_KEY}` },
+          timeout: 3000
+        }
+      );
+
+      // Cache status for 1 minute (shorter TTL for status checks)
+      await setex(cacheKey, 60, JSON.stringify(response.data));
+
+      return response.data;
+    } catch (error) {
+      console.error('Status check error:', error);
+      throw error;
+    }
   }
 }
 
-module.exports = cacheMiddleware;
+module.exports = new PaymentService();
 ```
+### 4. Express API Endpoint
+
+```javascript
+// server.js
+const express = require('express');
+const cacheMiddleware = require('./cache-middleware');
+const paymentService = require('./payment-service');
+
+const app = express();
+app.use(express.json());
+
+// Apply caching middleware to all GET requests
+app.get('*', cacheMiddleware);
+
+app.post('/process-payment', async (req, res) => {
+  try {
+    const result = await paymentService.processPayment(req.body);
+    res.json(result);
+  } catch (error) {
+    res.status(500).json({ error: 'Payment processing failed' });
+  }
+});
+
+app.get('/payment-status/:id', async (req, res) => {
+  try {
+    const status = await paymentService.getPaymentStatus(req.params.id);
+    res.json(status);
+  } catch (error) {
+    res.status(500).json({ error: 'Status check failed' });
+  }
+});
+
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => {
+  console.log(`Server running on port ${PORT}`);
+});
+```
+
+
 
