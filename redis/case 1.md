@@ -12,3 +12,32 @@ We'll implement Redis caching to:
 2. Serve cached responses for identical requests
 3. Automatically refresh stale data
 
+## Implementation Code
+
+### 1. Setup Redis Connection
+
+```javascript
+// redis-client.js
+const redis = require('redis');
+const { promisify } = require('util');
+
+const client = redis.createClient({
+  host: process.env.REDIS_HOST,
+  port: process.env.REDIS_PORT,
+  password: process.env.REDIS_PASSWORD
+});
+
+client.on('error', (err) => {
+  console.error('Redis error:', err);
+});
+
+module.exports = {
+  get: promisify(client.get).bind(client),
+  set: promisify(client.set).bind(client),
+  setex: promisify(client.setex).bind(client),
+  del: promisify(client.del).bind(client),
+  quit: promisify(client.quit).bind(client),
+};
+```
+
+
